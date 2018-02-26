@@ -27,11 +27,19 @@
 
 (in-package :pr2-manipulation-process-module)
 
+;; TODO: when porting for other robots, this should be ok ... but watch out for it.
+(defparameter *allowed-arms* `(:left :right))
+
+(defun make-empty-goal-specification ()
+  ;; TODO: should have some query here to get the default goal-spec type, rather than hard-code it.
+  ;; TODO: similar, have some reasoning for which fall-back to use, rather than just hard-code it
+  (mot-man:make-goal-specification :giskard-goal-specification :fallback-converter (list (mot-man:make-fallback-converter :moveit-goal-specification))))
+
 (defun make-message (type-str slots)
   (apply #'roslisp::make-message-fn type-str slots))
 
 (defun arm-for-pose (pose)
-  (let* ((pose-frame (tf:frame-id pose))
+  (let* ((pose-frame (frame-id pose))
          (string-frame
            (or (when (and (> (length pose-frame) 0)
                           (string= (subseq pose-frame 0 1) "/"))
@@ -39,15 +47,16 @@
                pose-frame)))
     (cut:var-value
      '?side
-     (first (crs:prolog `(manipulator-link ?side ,string-frame))))))
+     (first (prolog:prolog `(and (robot ?robot)
+                                 (end-effector-link ?robot ?side ,string-frame)))))))
 
 (defun gripper-offset-pose (side)
   "Adds custom offsets to gripper poses based on their arm `side'. This is mainly intended for customly adapted robots that need special handling for gripper sides."
   ;; TODO(winkler): Move this function into `userspace' in order to not interfer with other scenarios' robot (PR2) setups.
   (ecase side
-    (:left (tf:make-pose (tf:make-3d-vector -0.035 0.0 0.0)
-                         (tf:make-identity-rotation)))
-    (:right (tf:make-identity-pose))))
+    (:left (cl-transforms:make-pose (cl-transforms:make-3d-vector -0.035 0.0 0.0)
+                                    (cl-transforms:make-identity-rotation)))
+    (:right (cl-transforms:make-identity-pose))))
 
 (defun no-trailing-zeros (lst)
   (cond ((= 0 (car (last lst)))
@@ -130,10 +139,16 @@
   ;; TODO(winkler): Implement this function.
   combos)
 
-(defun arms-handles-combos (arms handles &key sort-by-distance
-                                          (use-all-arms t))
+(defun arms-handles-combos (arms handles &key sort-by-distance allowed-arms
+                                           (use-all-arms t))
   "Generates a lazy list of permutations of available `arms' over `handles'. If the flag `sort-by-distance' is set, the lazy list is sorted according to the lowest overall distance of one arms/handles combo set."
-  (let* ((permuted-combos (permute-grasp-combinations
+  (let* ((arms (or (unless allowed-arms arms)
+                   (cpl:mapcar-clean
+                    (lambda (arm)
+                      (when (find arm allowed-arms)
+                        arm))
+                    arms)))
+         (permuted-combos (permute-grasp-combinations
                            arms handles
                            :use-all-arms use-all-arms))
          (maybe-sorted-combos
@@ -143,25 +158,33 @@
     maybe-sorted-combos))
 
 (defun orient-pose (pose-stamped z-rotation)
-  (let* ((orig-orient (tf:orientation pose-stamped))
-         (tran-orient (tf:orientation
+  (let* ((orig-orient (cl-transforms:orientation pose-stamped))
+         (tran-orient (cl-transforms:orientation
                        (cl-transforms:transform-pose
-                        (tf:make-transform
-                         (tf:make-identity-vector)
-                         (tf:euler->quaternion :az z-rotation))
-                        (tf:make-pose
-                         (tf:make-identity-vector) orig-orient)))))
-    (tf:make-pose-stamped
-     (tf:frame-id pose-stamped) (ros-time)
-     (tf:origin pose-stamped) tran-orient)))
+                        (cl-transforms:make-transform
+                         (cl-transforms:make-identity-vector)
+                         (cl-transforms:euler->quaternion :az z-rotation))
+                        (cl-transforms:make-pose
+                         (cl-transforms:make-identity-vector) orig-orient)))))
+    (make-pose-stamped
+     (frame-id pose-stamped) (ros-time)
+     (cl-transforms:origin pose-stamped) tran-orient)))
 
 (defun elevate-pose (pose-stamped z-offset)
-  (tf:copy-pose-stamped
-   pose-stamped :origin (tf:v+ (tf:origin pose-stamped)
-                               (tf:make-3d-vector 0.0 0.0 z-offset))))
+  (copy-pose-stamped
+   pose-stamped :origin (cl-transforms:v+ (cl-transforms:origin pose-stamped)
+                                          (cl-transforms:make-3d-vector 0.0 0.0 z-offset))))
 
-(defun rotated-poses (pose &key segments (z-offset 0.0))
-  (let ((segments (or segments 8)))
+(defun rotated-poses (object pose &key segments (z-offset 0.0))
+  (let* ((object-type (desig-prop-value object :type))
+         (prolog-result (prolog:prolog `(orientation-matters ,object-type ?matters)))
+         (matters
+           (when prolog-result
+             (with-vars-bound (?matters) (lazy-car prolog-result)
+               ?matters)))
+         (segments (or (and matters 2)
+                       segments
+                       8)))
     (loop for i from 0 below segments
           as orientation-offset = (* 2 pi (/ i segments))
           collect (elevate-pose
@@ -173,12 +196,13 @@
                (lazy-mapcar (lambda (bdgs)
                               (with-vars-bound (?ro) bdgs
                                 ?ro))
-                            (crs:prolog `(reorient-object ,object ?ro))))))
+                            (prolog:prolog `(reorient-object ,object ?ro))))))
     (find t ro-s)))
 
 (def-fact-group pr2-manipulation-designators (action-desig
                                               cram-language::grasp-effort
-                                              reorient-object)
+                                              reorient-object
+                                              close-radius)
   
   (<- (maximum-object-tilt nil ?max-tilt)
     (symbol-value pi ?max-tilt))
@@ -190,14 +214,14 @@
   
   (<- (min-handles ?object-desig ?min-handles)
     (current-designator ?object-desig ?current-object)
-    (or (desig-prop ?current-object (min-handles ?min-handles))
+    (or (desig-prop ?current-object (:min-handles ?min-handles))
         (equal ?min-handles 1)))
   
   (<- (ros-message ?type ?slots ?msg)
     (lisp-fun make-message ?type ?slots ?msg))
 
   (<- (obstacles ?desig ?obstacles)
-    (findall ?o (desig-prop ?desig (obstacle ?o))
+    (findall ?o (desig-prop ?desig (:obstacle ?o))
              ?obstacles))
   
   (<- (reorient-object-globally ?object-desig ?reorient-object)
@@ -211,7 +235,7 @@
               ?absolute-handle))
   
   (<- (handles ?object ?handles)
-    (setof ?handle (desig-prop ?object (handle ?handle)) ?handles))
+    (setof ?handle (desig-prop ?object (:handle ?handle)) ?handles))
   
   (<- (gripper-arms-in-belief ?desig ?arms)
     (current-designator ?desig ?current-desig)
@@ -220,72 +244,145 @@
   
   (<- (holding-arms ?desig ?arms)
     (current-designator ?desig ?current-desig)
-    (gripper-arms-in-belief ?current-desig ?arms))
+    (or (and (gripper-arms-in-belief ?current-desig ?arms)
+             (not (equal ?arms nil)))
+        (and (gripper-arms-in-desig ?current-desig ?arms)
+             (not (equal ?arms nil)))))
   
   (<- (handled-obj-desig? ?designator)
     (obj-desig? ?designator)
-    (desig-prop ?designator (handle ?_)))
+    (desig-prop ?designator (:handle ?_)))
   
   (<- (gripped-obj-desig? ?designator)
     (obj-desig? ?designator)
-    (desig-prop ?designator (at ?obj-loc))
+    (desig-prop ?designator (:at ?obj-loc))
     (loc-desig? ?obj-loc)
-    (desig-prop ?obj-loc (in gripper)))
+    (desig-prop ?obj-loc (:in :gripper)))
   
   ;; On the PR2 we don't need an open pose
-  (<- (action-desig ?desig (noop ?desig))
+  (<- (action-desig ?desig (noop ?desig ?goal-spec))
     (trajectory-desig? ?desig)
-    (desig-prop ?desig (pose open)))
+    (desig-prop ?desig (:pose :open))
+    (lisp-fun make-empty-goal-specification ?goal-spec))
 
-  (<- (action-desig ?desig (park-object ?obj ?grasp-assignments))
+  (<- (action-desig ?desig (park-object ?obj ?grasp-assignments ?goal-spec))
     (trajectory-desig? ?desig)
-    (desig-prop ?desig (to park))
-    (desig-prop ?desig (obj ?obj))
-    (current-designator ?obj ?current-obj)
-    (object->grasp-assignments ?current-obj ?grasp-assignments))
-  
-  (<- (action-desig ?desig (park-arms ?arms))
-    (trajectory-desig? ?desig)
-    (desig-prop ?desig (to park))
-    (free-arms ?arms))
-  
-  (<- (action-desig ?desig (lift ?current-obj ?grasp-assignments ?distance))
-    (trajectory-desig? ?desig)
-    (desig-prop ?desig (to lift))
-    (desig-prop ?desig (obj ?obj))
+    (desig-prop ?desig (:to :park))
+    (or (desig-prop ?desig (:obj ?obj))
+        (desig-prop ?desig (:object ?obj)))
     (current-designator ?obj ?current-obj)
     (object->grasp-assignments ?current-obj ?grasp-assignments)
-    (-> (desig-prop ?desig (distance ?distance))
-        (true)
-        (== ?distance 0.10)))
-
-  (<- (action-desig ?desig (park ?arms ?obj ?obstacles))
+    ;; TODO: if you want to add task-related information from the action designator to the goal-spec,
+    ;; this is the place to do it.
+    (lisp-fun make-empty-goal-specification ?goal-spec))
+  
+  (<- (action-desig ?desig (park-arms ?arms ?goal-spec))
     (trajectory-desig? ?desig)
-    (desig-prop ?desig (to carry))
-    (desig-prop ?desig (obj ?obj))
+    (desig-prop ?desig (:to :park))
+    (free-arms ?arms)
+    ;; TODO: if you want to add task-related information from the action designator to the goal-spec,
+    ;; this is the place to do it.
+    (lisp-fun make-empty-goal-specification ?goal-spec))
+
+  (<- (action-desig ?desig (park-none))
+    (trajectory-desig? ?desig)
+    (desig-prop ?desig (:to :park)))
+  
+  (<- (action-desig ?desig (lift nil nil ?distance ?goal-spec))
+    (trajectory-desig? ?desig)
+    (desig-prop ?desig (:to :lift))
+    (desig-prop ?desig (:obj nil))
+    (-> (desig-prop ?desig (:distance ?distance))
+        (true)
+        (== ?distance 0.1))
+    ;; TODO: if you want to add task-related information from the action designator to the goal-spec,
+    ;; this is the place to do it.
+    (lisp-fun make-empty-goal-specification ?goal-spec))
+
+  (<- (action-desig ?desig (handover ?object ?grasp-assignments ?goal-spec))
+    (trajectory-desig? ?desig)
+    (desig-prop ?desig (:to :handover))
+    (desig-prop ?desig (:obj ?obj))
+    (current-designator ?obj ?object)
+    (object->grasp-assignments ?object ?grasp-assignments)
+    ;; TODO: if you want to add task-related information from the action designator to the goal-spec,
+    ;; this is the place to do it.
+    (lisp-fun make-empty-goal-specification ?goal-spec))
+
+  (<- (action-desig ?desig (lift ?current-obj ?grasp-assignments ?distance ?goal-spec))
+    (trajectory-desig? ?desig)
+    (desig-prop ?desig (:to :lift))
+    (or (desig-prop ?desig (:obj ?obj))
+        (desig-prop ?desig (:object ?obj)))
+    (not (equal ?obj nil))
+    (current-designator ?obj ?current-obj)
+    (object->grasp-assignments ?current-obj ?grasp-assignments)
+    (-> (desig-prop ?desig (:distance ?distance))
+        (true)
+        (== ?distance 0.1))
+    ;; TODO: if you want to add task-related information from the action designator to the goal-spec,
+    ;; this is the place to do it.
+    (lisp-fun make-empty-goal-specification ?goal-spec))
+
+  (<- (grasp-type ?obj ?grasp-type)
+    (not (equal ?obj nil))
+    (current-designator ?obj ?current)
+    (desig-prop ?current (:grasp-type ?grasp-type)))
+
+  (<- (grasp-type ?_ :push))
+
+  (<- (action-desig ?desig (park ?arms ?obj ?goal-spec ?obstacles))
+    (trajectory-desig? ?desig)
+    (desig-prop ?desig (:to :carry))
+    (or (desig-prop ?desig (:obj ?obj))
+        (desig-prop ?desig (:object ?obj)))
     (current-designator ?obj ?current-obj)
     (holding-arms ?current-obj ?arms)
-    (obstacles ?desig ?obstacles))
+    (obstacles ?desig ?obstacles)
+    ;; TODO: if you want to add task-related information from the action designator to the goal-spec,
+    ;; this is the place to do it.
+    (lisp-fun make-empty-goal-specification ?goal-spec))
   
   (<- (free-arm ?free-arm)
-    (arm ?free-arm)
+    (robot ?robot)
+    (arm ?robot ?free-arm)
+    (symbol-value *allowed-arms* ?allowed-arms)
+    (member ?free-arm ?allowed-arms)
     (not (object-in-hand ?_ ?free-arm)))
   
   (<- (arm-for-pose ?pose ?arm)
     (lisp-fun arm-for-pose ?pose ?arm)
     (not (equal ?arm nil)))
   
-  (<- (action-desig ?desig (grasp ?desig ?current-obj))
+  (<- (action-desig ?desig (grasp ?desig ?current-obj ?goal-spec))
     (trajectory-desig? ?desig)
-    (desig-prop ?desig (to grasp))
-    (desig-prop ?desig (obj ?obj))
-    (newest-effective-designator ?obj ?current-obj))
-  
-  (<- (grasp-offsets top-slide-down ?pregrasp-offset ?grasp-offset)
+    (desig-prop ?desig (:to :grasp))
+    (or (desig-prop ?desig (:obj ?obj))
+        (desig-prop ?desig (:object ?obj)))
+    (newest-effective-designator ?obj ?current-obj)
+    ;; TODO: if you want to add task-related information from the action designator to the goal-spec,
+    ;; this is the place to do it.
+    (lisp-fun make-empty-goal-specification ?goal-spec))
+
+  (<- (action-desig ?desig (shove-into ?current-obj ?target-pose ?goal-spec))
+    (trajectory-desig? ?desig)
+    (desig-prop ?desig (:to :shove-into))
+    (desig-prop ?desig (:obj ?obj))
+    (current-designator ?obj ?current-obj)
+    (desig-prop ?desig (:pose ?target-pose))
+    ;; TODO: if you want to add task-related information from the action designator to the goal-spec,
+    ;; this is the place to do it.
+    (lisp-fun make-empty-goal-specification ?goal-spec))
+
+  (<- (grasp-offsets ?_ top-slide-down ?pregrasp-offset ?grasp-offset)
     (symbol-value *pregrasp-top-slide-down-offset* ?pregrasp-offset)
-    (symbol-value *grasp-top-slide-down-offset* ?grasp-offset))
-  
-  (<- (grasp-offsets ?_ ?pregrasp-offset ?grasp-offset) ;; For example, 'push'
+    (symbol-value *grasp-offset* ?grasp-offset))
+
+  (<- (grasp-offsets ?_ pull ?pregrasp-offset ?grasp-offset)
+    (symbol-value *pregrasp-pull-offset* ?pregrasp-offset)
+    (symbol-value *grasp-pull-offset* ?grasp-offset))
+
+  (<- (grasp-offsets ?_ ?_ ?pregrasp-offset ?grasp-offset) ;; For example, 'push'
     (symbol-value *pregrasp-offset* ?pregrasp-offset)
     (symbol-value *grasp-offset* ?grasp-offset))
   
@@ -301,27 +398,63 @@
   (<- (open-gripper ?arm)
     (or (and (not (gripper-open? ?arm))
              (lisp-pred open-gripper ?arm))
-        (crs:true)))
+        (prolog:true)))
   
   (<- (object-pose-reachable ?object ?pose ?arm)
-    (grasp-type ?object ?grasp-type)
-    (grasp-offsets ?grasp-type ?pregrasp-offset ?grasp-offset)
+    (once (grasp-type ?object ?grasp-type))
+    (once (grasp-offsets ?arm ?grasp-type ?pregrasp-offset ?grasp-offset))
+    (once (gripper-offset ?arm ?gripper-offset))
     (lisp-fun cost-reach-pose ?object ?arm ?pose
               ?pregrasp-offset ?grasp-offset
-              :only-reachable t ?cost)
+              :only-reachable t
+              :ignore-collisions-grasp t
+              :gripper-offset-pose ?gripper-offset
+              ?cost)
     (not (equal ?cost nil)))
-  
+
+  (<- (close-radius ?object ?radius)
+    (fail))
+
   (<- (arm-handle-assignment ?object ?arm-handle-combo ?grasp-assignment)
+    (desig-prop ?object (:type :semantic-handle))
     (member (?arm . ?handle) ?arm-handle-combo)
-    (once (or (grasp-type ?handle ?grasp-type)
-              (grasp-type ?object ?grasp-type)))
-    (grasp-offsets ?grasp-type ?pregrasp-offset ?grasp-offset)
+    (once (grasp-offsets ?arm pull ?pregrasp-offset ?grasp-offset))
     (gripper-offset ?arm ?gripper-offset)
-    (absolute-handle ?object ?handle ?absolute-handle)
-    (desig-prop ?absolute-handle (at ?location))
+    (desig-prop ?handle (:at ?location))
     (lisp-fun reference ?location ?pose)
     (open-gripper ?arm)
     (object-pose-reachable ?object ?pose ?arm)
+    (once (or (close-radius ?object ?radius)
+              ;; TODO(winkler): Additionally, check the object
+              ;; properties here.
+              (equal ?radius 0.0)))
+    (lisp-fun make-grasp-assignment
+              :side ?arm
+              :grasp-type pull
+              :pose ?pose
+              :handle ?handle
+              :pregrasp-offset ?pregrasp-offset
+              :grasp-offset ?grasp-offset
+              :gripper-offset ?gripper-offset
+              :close-radius ?radius
+              ?grasp-assignment))
+
+  (<- (arm-handle-assignment ?object ?arm-handle-combo ?grasp-assignment)
+    (not (desig-prop ?object (:type :semantic-handle)))
+    (member (?arm . ?handle) ?arm-handle-combo)
+    (once (or (grasp-type ?handle ?grasp-type)
+              (grasp-type ?object ?grasp-type)))
+    (once (grasp-offsets ?arm ?grasp-type ?pregrasp-offset ?grasp-offset))
+    (once (gripper-offset ?arm ?gripper-offset))
+    (absolute-handle ?object ?handle ?absolute-handle)
+    (desig-prop ?absolute-handle (:at ?location))
+    (lisp-fun reference ?location ?pose)
+    (open-gripper ?arm)
+    (object-pose-reachable ?object ?pose ?arm)
+    (once (or (close-radius ?object ?radius)
+              ;; TODO(winkler): Additionally, check the object
+              ;; properties here.
+              (equal ?radius 0.0)))
     (lisp-fun make-grasp-assignment
               :side ?arm
               :grasp-type ?grasp-type
@@ -330,6 +463,7 @@
               :pregrasp-offset ?pregrasp-offset
               :grasp-offset ?grasp-offset
               :gripper-offset ?gripper-offset
+              :close-radius ?radius
               ?grasp-assignment))
   
   (<- (grasped-object-handle (?object ?handle))
@@ -340,22 +474,35 @@
   
   (<- (carry-handles ?object ?carry-handles)
     (once
-     (or (desig-prop ?object (desig-props::carry-handles
-                              ?carry-handles))
+     (or (desig-prop ?object (:carry-handles ?carry-handles))
          (equal ?carry-handles 1))))
-  
+
+  (<- (free-arms-handles-combos ?semantic-handle ?combos)
+    (desig-prop ?semantic-handle (:type :semantic-handle))
+    (free-arms ?free-arms)
+    (lisp-fun list ?semantic-handle ?handles)
+    (lisp-fun arms-handles-combos ?free-arms ?handles
+              :use-all-arms nil ?combos))
+
   (<- (free-arms-handles-combos ?object ?combos)
+    (not (desig-prop ?semantic-handle (:type :semantic-handle)))
     (carry-handles ?object ?carry-handles)
     (once
      (or (and (equal ?carry-handles 1)
               (equal ?use-all-arms nil))
          (equal ?use-all-arms t)))
+    (once
+     (or (desig-prop ?object (:sides ?sides))
+         (equal ?sides (:left :right))))
     (free-arms ?free-arms)
     (handles ?object ?handles)
     (lisp-fun arms-handles-combos ?free-arms ?handles
-              :use-all-arms ?use-all-arms ?combos))
+              :use-all-arms ?use-all-arms
+              :allowed-arms ?sides
+              ?combos))
   
   (<- (grasp-assignments ?object ?grasp-assignments)
+    (not (desig-prop ?object (:type :semantic-handle)))
     (free-arms-handles-combos ?object ?arm-handle-combos)
     (member ?arm-handle-combo ?arm-handle-combos)
     (setof ?grasp-assignment
@@ -366,23 +513,29 @@
   
   (<- (grasp-type ?obj ?grasp-type)
     (current-designator ?obj ?current)
-    (desig-prop ?current (desig-props:grasp-type ?grasp-type)))
+    (desig-prop ?current (:grasp-type ?grasp-type)))
   
   (<- (grasp-type ?_ ?grasp-type)
-    (equal ?grasp-type desig-props:push))
+    (equal ?grasp-type :push))
+  
+  (<- (gripper-arms-in-desig ?object ?arms)
+    (desig-prop ?object (:at ?objloc))
+    (current-designator ?objloc ?current-objloc)
+    (desig-prop ?current-objloc (:in :gripper))
+    (setof ?arm (and (desig-prop ?current-objloc (:pose ?objpose))
+                     (arm-for-pose ?objpose ?arm)
+                     (member ?arm (:left :right)))
+           ?arms))
   
   (<- (object-grasps-in-gripper ?object ?grasps)
-    (desig-prop ?object (desig-props:at ?objloc))
+    (desig-prop ?object (:at ?objloc))
     (current-designator ?objloc ?current-objloc)
-    (desig-prop ?current-objloc (desig-props:in desig-props:gripper))
-    (setof ?grasp (and (desig-prop ?current-objloc
-                                   (desig-props:pose ?objpose))
+    (desig-prop ?current-objloc (:in :gripper))
+    (setof ?grasp (and (desig-prop ?current-objloc (:pose ?objpose))
                        (arm-for-pose ?objpose ?arm)
                        (member ?arm (:left :right))
                        (once
-                        (or (desig-prop ?current-objloc
-                                        (desig-props:handle
-                                         (?arm ?handle)))
+                        (or (desig-prop ?current-objloc (:handle (?arm ?handle)))
                             (equal ?handle nil)))
                        (grasp-type ?handle ?grasp-type)
                        (equal ?grasp (?arm . (?objpose
@@ -395,17 +548,48 @@
   (<- (object->grasp-assignments ?object ?grasp-assignments)
     (object-grasps-in-gripper ?object ?grasps)
     (lisp-fun cons->grasp-assignments ?grasps ?grasp-assignments))
-  
-  (<- (action-desig ?desig (put-down ?current-obj ?loc ?grasp-assignments))
+
+  (<- (action-desig ?desig (pull-open ?semantic-handle ?goal-spec))
     (trajectory-desig? ?desig)
-    (desig-prop ?desig (to put-down))
-    (desig-prop ?desig (obj ?obj))
-    (desig-prop ?desig (at ?loc))
-    (current-designator ?obj ?current-obj)
-    (object->grasp-assignments ?current-obj ?grasp-assignments))
+    (desig-prop ?desig (:to :pull-open))
+    (desig-prop ?desig (:handle ?semantic-handle))
+    ;; TODO: if you want to add task-related information from the action designator to the goal-spec,
+    ;; this is the place to do it.
+    (lisp-fun make-empty-goal-specification ?goal-spec))
   
-  (<- (putdown-pose ?original-pose ?segments ?putdown-pose)
-    (lisp-fun rotated-poses ?original-pose
+  (<- (action-desig ?desig (open-container ?arm ?loc ?degree ?goal-spec))
+    (trajectory-desig? ?desig)
+    (desig-prop ?desig (:to :open))
+    (desig-prop ?desig (:location ?loc))
+    (desig-prop ?desig (:degree ?degree))
+    (free-arm ?arm)
+    ;; TODO: if you want to add task-related information from the action designator to the goal-spec,
+    ;; this is the place to do it.
+    (lisp-fun make-empty-goal-specification ?goal-spec))
+  
+  (<- (grasp-assignments ?semantic-handle ?grasp-assignments)
+    (desig-prop ?semantic-handle (:type :semantic-handle))
+    (free-arms-handles-combos ?semantic-handle ?arm-handle-combos)
+    (member ?arm-handle-combo ?arm-handle-combos)
+    (setof ?grasp-assignment
+           (arm-handle-assignment
+            ?semantic-handle ?arm-handle-combo ?grasp-assignment)
+           ?grasp-assignments))
+
+  (<- (action-desig ?desig (put-down ?current-obj ?loc ?grasp-assignments ?goal-spec))
+    (trajectory-desig? ?desig)
+    (desig-prop ?desig (:to :put-down))
+    (or (desig-prop ?desig (:obj ?obj))
+        (desig-prop ?desig (:object ?obj)))
+    (desig-prop ?desig (:at ?loc))
+    (current-designator ?obj ?current-obj)
+    (object->grasp-assignments ?current-obj ?grasp-assignments)
+    ;; TODO: if you want to add task-related information from the action designator to the goal-spec,
+    ;; this is the place to do it.
+    (lisp-fun make-empty-goal-specification ?goal-spec))
+
+  (<- (putdown-pose ?object ?original-pose ?segments ?putdown-pose)
+    (lisp-fun rotated-poses ?object ?original-pose
               :segments ?segments
               :z-offset 0.01
               ?rotated-poses)
@@ -413,45 +597,56 @@
   
   (<- (action-desig ?desig (pull ?current-obj ?arms
                                  ?direction ?distance
-                                 ?obstacles))
+                                 ?obstacles ?goal-spec))
     (trajectory-desig? ?desig)
-    (desig-prop ?desig (to pull))
-    (desig-prop ?desig (obj ?obj))
-    (desig-prop ?desig (distance ?distance))
-    (desig-prop ?desig (direction ?direction))
+    (desig-prop ?desig (:to :pull))
+    (or (desig-prop ?desig (:obj ?obj))
+        (desig-prop ?desig (:object ?obj)))
+    (desig-prop ?desig (:distance ?distance))
+    (desig-prop ?desig (:direction ?direction))
     (current-designator ?obj ?current-obj)
-    (crs:fail) ;; This predicate needs to be refactored
+    (fail) ;; This predicate needs to be refactored
     (grasped-object-part ?obj ?grasped)
     (holding-arms ?current-obj ?arms)
-    (obstacles ?desig ?obstacles))
+    (obstacles ?desig ?obstacles)
+    ;; TODO: if you want to add task-related information from the action designator to the goal-spec,
+    ;; this is the place to do it.
+    (lisp-fun make-empty-goal-specification ?goal-spec))
   
   (<- (action-desig ?desig (push ?current-obj ?arms
                                  ?direction ?distance
-                                 ?obstacles))
+                                 ?obstacles ?goal-spec))
     (trajectory-desig? ?desig)
-    (desig-prop ?desig (to push))
-    (desig-prop ?desig (obj ?obj))
-    (desig-prop ?desig (distance ?distance))
-    (desig-prop ?desig (direction ?direction))
+    (desig-prop ?desig (:to :push))
+    (or (desig-prop ?desig (:obj ?obj))
+        (desig-prop ?desig (:object ?obj)))
+    (desig-prop ?desig (:distance ?distance))
+    (desig-prop ?desig (:direction ?direction))
     (current-designator ?obj ?current-obj)
     (holding-arms ?current-obj ?arms)
-    (obstacles ?desig ?obstacles)))
+    (obstacles ?desig ?obstacles)
+    ;; TODO: if you want to add task-related information from the action designator to the goal-spec,
+    ;; this is the place to do it.
+    (lisp-fun make-empty-goal-specification ?goal-spec)))
 
 (def-fact-group manipulation-process-module (matching-process-module available-process-module)
 
   (<- (matching-process-module ?designator pr2-manipulation-process-module)
     (and (trajectory-desig? ?designator)
-         (or (desig-prop ?designator (to grasp))
-             (desig-prop ?designator (to put-down))
-             (desig-prop ?designator (to open))
-             (desig-prop ?designator (to close))
-             (desig-prop ?designator (to park))
-             (desig-prop ?designator (pose open))        
-             (desig-prop ?designator (to lift))
-             (desig-prop ?designator (to carry))
-             (desig-prop ?designator (to pull))
-             (desig-prop ?designator (to push))
-             (desig-prop ?designator (to debug)))))
+         (or (desig-prop ?designator (:to :grasp))
+             (desig-prop ?designator (:to :put-down))
+             (desig-prop ?designator (:to :open))
+             (desig-prop ?designator (:to :close))
+             (desig-prop ?designator (:to :park))
+             (desig-prop ?designator (:pose :open))
+             (desig-prop ?designator (:to :lift))
+             (desig-prop ?designator (:to :carry))
+             (desig-prop ?designator (:to :pull))
+             (desig-prop ?designator (:to :push))
+             (desig-prop ?designator (:to :shove-into))
+             (desig-prop ?designator (:to :pull-open))
+             (desig-prop ?designator (:to :debug))
+             (desig-prop ?designator (:to :handover)))))
 
   (<- (available-process-module pr2-manipulation-process-module)
     (not (projection-running ?_))))

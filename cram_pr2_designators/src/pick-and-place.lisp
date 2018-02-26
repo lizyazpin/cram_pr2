@@ -26,14 +26,17 @@
 ;;; ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 ;;; POSSIBILITY OF SUCH DAMAGE.
 
-(in-package :pr2-manipulation-knowledge)
+(in-package :cram-pr2-designators)
+
+(defparameter *put-down-pose-z-offset* 0.01
+  "Extra padding between the calculated put-down pose and the surface [m].")
 
 (defun find-designator-pose-in-link (gripper-link designator)
   (find-if (lambda (pose-frame-id)
-             (equal (tf::ensure-fully-qualified-name gripper-link)
-                    (tf::ensure-fully-qualified-name pose-frame-id)))
-           (desig-prop-values designator 'pose)
-           :key #'tf:frame-id))
+             (equal (cl-transforms-stamped:unslash-frame gripper-link)
+                    (cl-transforms-stamped:unslash-frame pose-frame-id)))
+           (desig-prop-values designator :pose)
+           :key #'frame-id))
 
 (defun get-latest-detected-object-pose (object-designator)
   "Returns the pose where the object has been detected using
@@ -62,45 +65,91 @@
 
 (defun calculate-put-down-hand-pose (gripper-link object-designator put-down-pose
                                      &key robot-pose)
-  (declare (type tf:pose-stamped put-down-pose))
+  (declare (type pose-stamped put-down-pose))
   (let ((current-object (desig:current-desig object-designator)))
-    (desig:with-desig-props (desig-props:at) current-object
-      (assert desig-props:at () "Object ~a needs to have an `at' property"
+    (desig:with-desig-props (at) current-object
+      (assert at () "Object ~a needs to have an `at' property"
               current-object)
       (desig:with-desig-props (in z-offset) at
-        (assert (eq in 'gripper) ()
+        (assert (eq in :gripper) ()
                 "Object ~a needs to be in the gripper" current-object)
         (assert z-offset () "Object ~a needs to have a `z-offset' property" current-object)
         (let* ((pose-in-gripper (find-designator-pose-in-link gripper-link at))
-               (put-down-pose-in-fixed-frame  (tf:transform-pose
-                                               cram-roslisp-common:*tf*
-                                               :target-frame cram-tf:*fixed-frame*
-                                               :pose put-down-pose))
-               (put-down-pose (if (not robot-pose)
-                                  put-down-pose-in-fixed-frame
-                                  (tf:copy-pose-stamped
-                                   put-down-pose-in-fixed-frame
-                                   :orientation (cl-transforms:q*
-                                                 (tf:orientation
-                                                  (find-designator-pose-in-link "base_footprint" at))
-                                                 (tf:orientation robot-pose))))))
+               (put-down-pose-in-fixed-frame
+                 (cl-transforms-stamped:transform-pose-stamped
+                  *transformer*
+                  :target-frame *fixed-frame*
+                  :pose put-down-pose
+                  :timeout *tf-default-timeout*))
+               (put-down-pose
+                 (if (not robot-pose)
+                     put-down-pose-in-fixed-frame
+                     (copy-pose-stamped
+                      put-down-pose-in-fixed-frame
+                      :orientation (cl-transforms:q*
+                                    (cl-transforms:orientation
+                                     (find-designator-pose-in-link "base_footprint" at))
+                                    (cl-transforms:orientation robot-pose))))))
           (assert pose-in-gripper () "Object ~a needs to have a `pose' property" current-object)
           (cl-transforms:transform->pose
            (cl-transforms:transform*
             (cl-transforms:pose->transform put-down-pose)
             (cl-transforms:make-transform
-             (cl-transforms:make-3d-vector 0 0 desig-props:z-offset)
+             (cl-transforms:make-3d-vector 0 0 (+ z-offset *put-down-pose-z-offset*))
              (cl-transforms:make-identity-rotation))
             (cl-transforms:transform-inv
              (cl-transforms:transform*
               (cl-transforms:make-transform
-               (tf:v* (get-tool-vector) -1)
+               (cl-transforms:v* (get-tool-vector) -1)
+               (cl-transforms:make-identity-rotation))
+              (cl-transforms:pose->transform pose-in-gripper))))))))))
+
+(defun calculate-pour-hand-pose (gripper-link object-designator pour-pose
+                                 &key robot-pose)
+  (declare (type pose-stamped pour-pose))
+  (let ((current-object (desig:current-desig object-designator)))
+    (desig:with-desig-props (at) current-object
+      (assert at () "Object ~a needs to have an `at' property"
+              current-object)
+      (desig:with-desig-props (in z-offset) at
+        (assert (eq in :gripper) ()
+                "Object ~a needs to be in the gripper" current-object)
+        (assert z-offset () "Object ~a needs to have a `z-offset' property" current-object)
+        (let* ((pose-in-gripper (find-designator-pose-in-link gripper-link at))
+               (put-down-pose-in-fixed-frame
+                 (cl-transforms-stamped:transform-pose-stamped
+                  *transformer*
+                  :target-frame *fixed-frame*
+                  :pose pour-pose
+                  :timeout *tf-default-timeout*))
+               (pour-pose
+                 (if (not robot-pose)
+                     put-down-pose-in-fixed-frame
+                     (copy-pose-stamped
+                      put-down-pose-in-fixed-frame
+                      :orientation (cl-transforms:q*
+                                    (cl-transforms:orientation
+                                     (find-designator-pose-in-link "base_footprint" at))
+                                    (cl-transforms:orientation robot-pose))))))
+          (assert pose-in-gripper () "Object ~a needs to have a `pose' property" current-object)
+          (cl-transforms:transform->pose
+           (cl-transforms:transform*
+            (cl-transforms:pose->transform pour-pose)
+            (cl-transforms:make-transform
+             (cl-transforms:make-3d-vector 0 0 (+ z-offset z-offset z-offset
+                                                  *put-down-pose-z-offset*))
+             ;; (cl-transforms:make-quaternion 0 0.75 0 0.25)
+             (cl-transforms:make-identity-rotation))
+            (cl-transforms:transform-inv
+             (cl-transforms:transform*
+              (cl-transforms:make-transform
+               (cl-transforms:v* (get-tool-vector) -1)
                (cl-transforms:make-identity-rotation))
               (cl-transforms:pose->transform pose-in-gripper))))))))))
 
 (defun calculate-object-lift-pose (gripper-link object-designator lifting-height)
   (let* ((current-object-designator (current-desig object-designator))
-         (object-location (desig-prop-value current-object-designator 'at))
+         (object-location (desig-prop-value current-object-designator :at))
          (lift-transform
            (cl-transforms:transform*
             (cl-transforms:pose->transform
@@ -112,7 +161,7 @@
     ;; grasp. In that case, we use that information and return a
     ;; pose. Otherwise, we just return a point that is
     ;; `lifting-height' above the object.
-    (cond ((eql (desig-prop-value object-location 'in) 'gripper)
+    (cond ((eql (desig-prop-value object-location :in) :gripper)
            (cl-transforms:transform->pose
             (cl-transforms:transform*
              lift-transform
@@ -123,15 +172,39 @@
               (get-tool-vector) (cl-transforms:make-identity-rotation)))))
           (t (cl-transforms:translation lift-transform)))))
 
+(defun object-type->tool-length (object-type)
+  (let ((bounding-box (btr:item-dimensions object-type)))
+    (cram-robot-interfaces:calculate-bounding-box-tool-length
+     bounding-box)))
+
 (def-fact-group pick-and-place-manipulation (trajectory-point)
+
+  (<- (%object-type-tool-length ?object-type ?grasp ?tool-length)
+    (object-type-grasp ?object-type ?grasp ?_)
+    (lisp-fun object-type->tool-length ?object-type ?tool-length))
+
+  (<- (object-type-tool-length ?object-type ?grasp ?tool-length)
+    (once
+     (or
+      (%object-type-tool-length ?object-type ?grasp ?tool-length)
+      (== ?tool-length 0.0)))
+    (robot ?robot)
+    (grasp ?robot ?grasp))
+
+  (<- (object-designator-tool-length
+       ?object-designator ?grasp ?tool-length)
+    (lisp-fun desig:current-desig ?object-designator ?current-object-designator)
+    (desig:desig-prop ?current-object-designator (:type ?object-type))
+    (object-type-tool-length ?object-type ?grasp ?tool-length))
 
   (<- (trajectory-point ?designator ?point ?side)
     (trajectory-desig? ?designator)
-    (desig-prop ?designator (to grasp))
-    (desig-prop ?designator (obj ?object))
+    (desig-prop ?designator (:to :grasp))
+    (or (desig-prop ?designator (:obj ?object))
+        (desig-prop ?designator (:object ?object)))
     (newest-effective-designator ?object ?current-object)
     (desig-location-prop ?current-object ?pose)
-    (-> (desig-prop ?desig (side ?side))
+    (-> (desig-prop ?desig (:side ?side))
         (available-arms ?current-object (?side))
         (and
          (once
@@ -140,8 +213,9 @@
     (lisp-fun cl-transforms:origin ?pose ?point))
 
   (<- (trajectory-point ?designator ?robot-reference-pose ?point ?side)
-    (desig-prop ?designator (to grasp))
-    (desig-prop ?designator (obj ?object))
+    (desig-prop ?designator (:to :grasp))
+    (or (desig-prop ?designator (:obj ?object))
+        (desig-prop ?designator (:object ?object)))
     (newest-effective-designator ?object ?current-object)
     (trajectory-point ?designator ?point-in-object ?side)
     (object-designator-tool-length ?current-object ?grasp ?tool-length)
@@ -151,18 +225,20 @@
               ?point))
 
   (<- (trajectory-point ?designator ?point ?side)
-    (desig-prop ?designator (to put-down))
+    (desig-prop ?designator (:to :put-down))
     (trajectory-point ?designator ?_ ?point ?side))
 
   (<- (trajectory-point ?designator ?robot-reference-pose ?point ?side)
     (trajectory-desig? ?designator)
-    (desig-prop ?designator (to put-down))
-    (desig-prop ?designator (obj ?object))
+    (desig-prop ?designator (:to :put-down))
+    (or (desig-prop ?designator (:obj ?object))
+        (desig-prop ?designator (:object ?object)))
     (current-designator ?object ?current-object)
-    (-> (desig-prop ?desig (side ?side)) (true) (true))
+    (-> (desig-prop ?desig (:side ?side)) (true) (true))
     (object-in-hand ?current-object ?side)
-    (end-effector-link ?side ?link)
-    (desig-prop ?designator (at ?location))
+    (robot ?robot)
+    (end-effector-link ?robot ?side ?link)
+    (desig-prop ?designator (:at ?location))
     (lisp-fun current-desig ?location ?current-location)
     (lisp-fun reference ?current-location ?put-down-pose)
     (-> (not (bound ?robot-reference-pose))
@@ -178,19 +254,46 @@
                        :robot-pose ?robot-reference-pose
                        ?point)))))
 
+  (<- (trajectory-point ?designator ?pose ?side)
+    (desig-prop ?designator (:to :pour))
+    (trajectory-point ?designator ?_ ?pose ?side))
+
+  (<- (trajectory-point ?designator ?robot-reference-pose ?pose ?side)
+    (trajectory-desig? ?designator)
+    (desig-prop ?designator (:to :pour))
+    (desig-prop ?designator (:container ?object))
+    (current-designator ?object ?current-object)
+    (-> (desig-prop ?desig (:side ?side)) (true) (true))
+    (object-in-hand ?current-object ?side)
+    (robot ?robot)
+    (end-effector-link ?robot ?side ?link)
+    (desig-prop ?designator (:at ?location))
+    (lisp-fun current-desig ?location ?current-location)
+    (lisp-fun reference ?current-location ?put-down-pose)
+    (-> (not (bound ?robot-reference-pose))
+        (lisp-fun calculate-pour-hand-pose
+                  ?link ?current-object ?put-down-pose
+                  ?pose)
+        (lisp-fun calculate-pour-hand-pose
+                  ?link ?current-object ?put-down-pose
+                  :robot-pose ?robot-reference-pose
+                  ?pose)))
+
   (<- (trajectory-point ?designator ?point ?side)
     (trajectory-desig? ?designator)
-    (desig-prop ?designator (to lift))
-    (desig-prop ?designator (obj ?object))
+    (desig-prop ?designator (:to :lift))
+    (or (desig-prop ?designator (:obj ?object))
+        (desig-prop ?designator (:object ?object)))
     (current-designator ?object ?current-object)
-    (-> (desig-prop ?desig (side ?side)) (true) (true))
+    (-> (desig-prop ?desig (:side ?side)) (true) (true))
     (object-in-hand ?current-object ?side)
-    (end-effector-link ?side ?link)
-    (once (or (desig-prop ?designator (distance ?lifting-height))
+    (robot ?robot)
+    (end-effector-link ?robot ?side ?link)
+    (once (or (desig-prop ?designator (:distance ?lifting-height))
               (== ?lifting-height 0.10)))
     (lisp-fun calculate-object-lift-pose ?link ?current-object ?lifting-height
               ?point))
 
   (<- (trajectory-point ?designator ?robot-reference-pose ?point ?side)
-    (desig-prop ?designator (to lift))
+    (desig-prop ?designator (:to :lift))
     (trajectory-point ?designator ?point ?side)))

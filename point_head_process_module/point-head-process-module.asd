@@ -33,14 +33,16 @@
   :description "Process module for pointing the head with PointHeadAction"
 
   :depends-on (actionlib-lisp
-               process-modules
-               designators
-               cram-reasoning
-               cram-roslisp-common
-               cram-plan-knowledge
+               cram-process-modules
+               cram-designators
+               cram-prolog
+               cram-tf
+               cram-plan-occasions-events
+               cram-occasions-events
                roslisp-utilities
                alexandria
-               pr2_controllers_msgs-msg)
+               pr2_controllers_msgs-msg
+               cram-robot-interfaces)
   :components
   ((:module "src"
             :components

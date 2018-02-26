@@ -48,6 +48,7 @@
          (handler-case
              (destructuring-bind (cmd action-goal) (reference goal)
                (maybe-shutdown-thread)
+               (actionlib-lisp:wait-for-server *action-client*)
                (ecase cmd
                  (point
                   (actionlib-lisp:send-goal-and-wait
@@ -56,7 +57,7 @@
                  (follow
                   (actionlib-lisp:send-goal-and-wait
                    *action-client* action-goal
-                   1.0 3.0)
+                   10.0 10.0)
                   ;; (setf *point-head-thread*
                   ;;       (sb-thread:make-thread
                   ;;        (curry #'follow-pose-thread-fun action-goal)))
@@ -70,8 +71,9 @@
               (point-head process-module)
               "Cannot resolve designator ~a. Ignoring." goal)))
       (cram-language::on-finish-move-head log-id success)
-      (plan-knowledge:on-event
-       (make-instance 'plan-knowledge:robot-state-changed)))))
+      (cram-occasions-events:on-event
+       (make-instance 'cram-plan-occasions-events:robot-state-changed
+                      :timestamp 0.0)))))
 
 (defun maybe-shutdown-thread ()
   (when (and *point-head-thread*
@@ -89,7 +91,7 @@
         ;; should be re-introduced, but doesn't work right now - so we
         ;; leave its function infrastructure here and fix it later.
         ;(actionlib-lisp:call-goal *action-client* goal)
-        (sleep 1)))))
+        (cpl:sleep 1)))))
 
 (defmethod pm-run :around ((pm point-head-process-module) &optional name)
   (declare (ignore name))

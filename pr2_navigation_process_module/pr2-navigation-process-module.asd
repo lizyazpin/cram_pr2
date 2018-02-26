@@ -32,13 +32,15 @@
   :license "BSD"
 
   :depends-on (actionlib-lisp
-               process-modules
-               designators
+               cram-process-modules
+               cram-designators
                roslisp-utilities
-               cram-reasoning
-               cram-roslisp-common
-               cram-plan-failures
-               cram-plan-knowledge
+               cram-prolog
+               cram-tf
+               cl-transforms-stamped
+               cram-common-failures
+               cram-plan-occasions-events
+               cram-occasions-events
                move_base_msgs-msg)
   :components
   ((:module "src"

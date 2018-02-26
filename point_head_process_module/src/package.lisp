@@ -31,14 +31,16 @@
 
 (desig-props:def-desig-package point-head-process-module
   (:use #:common-lisp
-        #:cram-reasoning
+        #:cram-prolog
         #:cram-designators
         #:cram-process-modules
-        #:cram-roslisp-common
         #:alexandria
-        #:cpl-impl)
+        #:cram-tf
+        #:cpl-impl
+        #:cl-transforms-stamped
+        #:cram-robot-interfaces)
   (:export #:point-head-process-module)
-  (:import-from cram-roslisp-common *tf2*)
+  (:shadowing-import-from :alexandria rotate)
   (:shadowing-import-from #:cpl-impl #:fail)
   (:shadowing-import-from #:cram-process-modules #:name)
   (:desig-properties #:to #:see #:follow #:pose #:location #:obj))

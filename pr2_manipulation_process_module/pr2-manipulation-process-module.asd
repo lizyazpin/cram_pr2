@@ -30,36 +30,44 @@
   :author "Lorenz Moesenlechner"
   :license "BSD"
 
-  :depends-on (designators-ros
-               process-modules
+  :depends-on (cram-tf
+               cram-process-modules
                actionlib
-               cram-roslisp-common
-               cram-reasoning
-               cram-plan-failures
-               cram-pr2-knowledge
+               roslisp-utilities
+               cram-prolog
+               cram-common-failures
+               cram-plan-occasions-events
+               cram-occasions-events
+               cram-pr2-description
                pr2_controllers_msgs-msg
                pr2_msgs-msg
                pr2_msgs-srv
                trivial-garbage
                std_srvs-srv
                alexandria
-               semantic-map-collision-environment
+               ;;semantic-map-collision-environment
+               ;;cram-manipulation
+               cram-robot-interfaces
                pr2_mechanism_msgs-srv
-               pr2-manipulation-knowledge
+               cram-pr2-designators
+               cram-motion-manager
                cram-moveit)
   :components
   ((:module "src"
             :components
             ((:file "package")
              (:file "utils" :depends-on ("package"))
-             (:file "grasping" :depends-on ("package" "utils"))
              (:file "sensors" :depends-on ("package" "utils"))
              (:file "motion-library" :depends-on ("package"))
+             (:file "grasping" :depends-on ("package" "utils" "motion-library"))
              (:file "controller-manager" :depends-on ("package"))
-             (:file "kinematics" :depends-on ("package"))
+             (:file "kinematics" :depends-on ("package" "motion-library"))
              (:file "collision-environment" :depends-on ("package"))
              (:file "process-module"
-              :depends-on ("package" "kinematics" "collision-environment" "controller-manager" "motion-library" "grasping" "sensors"))
+              :depends-on ("package" "kinematics" "collision-environment"
+                                     "controller-manager" "motion-library"
+                                     "grasping" "sensors"))
              (:file "events" :depends-on ("package" "collision-environment"))
              (:file "designator" :depends-on ("package" "process-module"))
-             (:file "action-handlers" :depends-on ("package" "process-module" "grasping"))))))
+             (:file "action-handlers"
+              :depends-on ("package" "process-module" "grasping" "motion-library"))))))

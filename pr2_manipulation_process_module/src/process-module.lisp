@@ -45,29 +45,31 @@
    (arm-side :accessor arm-side :initform nil :initarg :arm-side)
    (name :accessor name :initform nil :initarg :name)))
 
-(define-condition move-arm-no-ik-solution (manipulation-failure) ())
-(define-condition move-arm-ik-link-in-collision (manipulation-failure) ())
+(define-condition move-arm-no-ik-solution (manipulation-pose-unreachable) ())
+(define-condition move-arm-ik-link-in-collision (manipulation-pose-unreachable) ())
 
 (defvar *gripper-action-left* nil)
 (defvar *gripper-action-right* nil)
 (defvar *gripper-grab-action-left* nil)
 (defvar *gripper-grab-action-right* nil)
 
+;; TODO: are these variables used anywhere? They're not used in this package, nor exported.
 (defvar *trajectory-action-left* nil)
 (defvar *trajectory-action-right* nil)
 (defvar *trajectory-action-both* nil)
 (defvar *trajectory-action-torso* nil)
 
-(defvar *left-safe-pose* (tf:make-pose-stamped
-                          "base_link" (ros-time)
-                          (tf:make-3d-vector 0.3 0.5 1.3)
-                          (tf:euler->quaternion :ax pi)))
-(defvar *right-safe-pose* (tf:make-pose-stamped
-                           "base_link" (ros-time)
-                           (tf:make-3d-vector 0.3 -0.5 1.3)
-                           (tf:euler->quaternion :ax pi)))
+;; (defvar *left-safe-pose* (make-pose-stamped
+;;                           "base_link" (ros-time)
+;;                           (cl-transforms:make-3d-vector 0.3 0.5 1.3)
+;;                           (cl-transforms:euler->quaternion :ax pi)))
+;; (defvar *right-safe-pose* (make-pose-stamped
+;;                            "base_link" (ros-time)
+;;                            (cl-transforms:make-3d-vector 0.3 -0.5 1.3)
+;;                            (cl-transforms:euler->quaternion :ax pi)))
 
 (defun init-pr2-manipulation-process-module ()
+  ;; TODO: make this robot-agnostic, so we could reuse this package (which actually contains generic low-level manipulation plans) for other robots too.
   (setf *gripper-action-left*
         (actionlib:make-action-client
          "/l_gripper_controller/gripper_action"
@@ -76,6 +78,7 @@
         (actionlib:make-action-client
          "/r_gripper_controller/gripper_action"
          "pr2_controllers_msgs/Pr2GripperCommandAction"))
+  ;; TODO: apart from here, *trajectory-action-torso* isn't used anywhere else in the package, nor is it exported.
   (setf *trajectory-action-torso*
         (actionlib:make-action-client
          "/torso_controller/joint_trajectory_action"
@@ -104,21 +107,11 @@
                       :name name)))
 
 (defun register-current-arm-pose (name side)
-  (let* ((joints (ecase side
-                   (:right (list "r_shoulder_pan_joint"
-                                 "r_shoulder_lift_joint"
-                                 "r_upper_arm_roll_joint"
-                                 "r_elbow_flex_joint"
-                                 "r_forearm_roll_joint"
-                                 "r_wrist_flex_joint"
-                                 "r_wrist_roll_joint"))
-                   (:left (list "l_shoulder_pan_joint"
-                                "l_shoulder_lift_joint"
-                                "l_upper_arm_roll_joint"
-                                "l_elbow_flex_joint"
-                                "l_forearm_roll_joint"
-                                "l_wrist_flex_joint"
-                                "l_wrist_roll_joint"))))
+  ;; TODO: replace this with a prolog call (which would take the joint names to be what's appropriate for the used robot, whatever it is)
+  (let* ((joints (cut:var-value '?joints
+                                (first (prolog:prolog
+                                         `(and (robot ?robot)
+                                               (arm-joints ?robot ,side ?joints))))))
          (joint-values (mapcar (lambda (joint)
                                  (moveit:get-joint-value joint))
                                joints)))
@@ -131,171 +124,56 @@
                      (eql side (arm-side arm-pose))))))
 
 (defun links-for-arm-side (side)
-  (ecase side
-    (:left (list "l_shoulder_pan_link"
-                 "l_shoulder_lift_link"
-                 "l_upper_arm_roll_link"
-                 "l_upper_arm_link"
-                 "l_elbow_flex_link"
-                 "l_forearm_roll_link"
-                 "l_forearm_link"
-                 "l_wrist_flex_link"
-                 "l_wrist_roll_link"
-                 "l_gripper_led_frame"
-                 "l_gripper_motor_accelerometer_link"
-                 "l_gripper_tool_frame"
-                 "l_gripper_r_finger_link"
-                 "l_gripper_r_finger_tip_link"
-                 "l_gripper_l_finger_tip_frame"
-                 "l_gripper_l_finger_link"
-                 "l_gripper_l_finger_tip_link"
-                 "l_gripper_motor_slider_link"
-                 "l_gripper_motor_screw_link"
-                 "l_gripper_palm_link"
-                 "l_force_torque_link"
-                 "l_force_torque_adapter_link"))
-    (:right (list "r_gripper_palm_link"
-                  "r_shoulder_pan_link"
-                  "r_shoulder_lift_link"
-                  "r_upper_arm_roll_link"
-                  "r_upper_arm_link"
-                  "r_elbow_flex_link"
-                  "r_forearm_roll_link"
-                  "r_forearm_link"
-                  "r_wrist_flex_link"
-                  "r_wrist_roll_link"
-                  "r_gripper_led_frame"
-                  "r_gripper_motor_accelerometer_link"
-                  "r_gripper_tool_frame"
-                  "r_gripper_r_finger_link"
-                  "r_gripper_r_finger_tip_link"
-                  "r_gripper_l_finger_tip_frame"
-                  "r_gripper_l_finger_link"
-                  "r_gripper_l_finger_tip_link"
-                  "r_gripper_motor_slider_link"
-                  "r_gripper_motor_screw_link"))))
+  (cut:var-value '?links
+                 (first (prolog:prolog
+                          `(and (robot ?robot)
+                                (arm-links ?robot ,side ?links))))))
 
-(define-hook cram-language::on-prepare-move-arm (side pose-stamped planning-group ignore-collisions))
-(define-hook cram-language::on-finish-move-arm (log-id success))
-
-(defun execute-move-arm-poses (side poses-stamped
+(defun execute-move-arm-poses (side poses-stamped goal-spec
                                &key allowed-collision-objects
                                  ignore-collisions
                                  plan-only
                                  start-state
                                  collidable-objects
                                  max-tilt)
+  ;; TODO: this function is not exported nor called from anywhere inside the package. Keep?
   (ros-info (pr2 manip-pm) "Executing multi-pose arm movement")
-  (let* ((trajectories
-           (mapcar
-            (lambda (pose-stamped)
-              (multiple-value-bind
-                    (trajectory start)
-                  (execute-move-arm-pose
-                   side pose-stamped
-                   :allowed-collision-objects allowed-collision-objects
-                   :ignore-collisions ignore-collisions
-                   :plan-only t
-                   :start-state start-state
-                   :collidable-objects collidable-objects
-                   :max-tilt max-tilt)
-                (setf start-state start)
-                trajectory))
-            poses-stamped))
-         (trajectory (moveit:concatenate-trajectories
-                      trajectories :ignore-va t)))
-    (cond (plan-only trajectory)
-          (t (moveit:execute-trajectory trajectory)))))
-    
+  (let* ((updated-goal-spec (mot-man:enriched-goal-specification goal-spec
+                                                                 :keys `((:allowed-collision-objects ,allowed-collision-objects)
+                                                                         (:ignore-collisions ,ignore-collisions)
+                                                                         (:collidable-objects ,collidable-objects)
+                                                                         (:max-tilt ,max-tilt)
+                                                                         (:plan-only ,plan-only)
+                                                                         (:start-state ,start-state))
+                                                                 :arm-pose-goals `((,side ,poses-stamped)))))
+    (cond (plan-only (mot-man:trajectories (mot-man:execute-arm-action updated-goal-spec)))
+          (t (mot-man:execute-arm-action updated-goal-spec)))))
 
-(defun execute-move-arm-pose (side pose-stamped
-                              &key allowed-collision-objects
-                                ignore-collisions
-                                plan-only
-                                start-state
-                                collidable-objects
-                                max-tilt
-                                quiet)
-  (unless quiet (ros-info (pr2 manip-pm) "Executing arm movement"))
-  (let* ((allowed-collision-objects
-           (cond (ignore-collisions
-                  (append allowed-collision-objects
-                          (links-for-arm-side side)))
-                 (t allowed-collision-objects)))
-         (link-name (cut:var-value
-                     '?link
-                     (first
-                      (crs:prolog
-                       `(manipulator-link ,side ?link)))))
-         (planning-group (cut:var-value
-                          '?group
-                          (first
-                           (crs:prolog
-                            `(planning-group ,side ?group))))))
-    (let ((log-id (first (cram-language::on-prepare-move-arm
-                          link-name pose-stamped
-                          planning-group ignore-collisions))))
-      (cpl:with-failure-handling
-          ((moveit:no-ik-solution (f)
-             (declare (ignore f))
-             (ros-error (move arm) "No IK solution found.")
-             (cram-language::on-finish-move-arm log-id nil)
-             (error 'manipulation-pose-unreachable
-                    :result (list side pose-stamped)))
-           (moveit:planning-failed (f)
-             (declare (ignore f))
-             (ros-error (move arm) "Planning failed.")
-             (cram-language::on-finish-move-arm log-id nil)
-             (error 'manipulation-pose-unreachable
-                    :result (list side pose-stamped)))
-           (moveit:goal-violates-path-constraints (f)
-             (declare (ignore f))
-             (ros-error (move arm) "Goal violates path constraints.")
-             (cram-language::on-finish-move-arm log-id nil)
-             (error 'manipulation-pose-unreachable
-                    :result (list side pose-stamped)))
-           (moveit:invalid-goal-constraints (f)
-             (declare (ignore f))
-             (ros-error (move arm) "Invalid goal constraints.")
-             (cram-language::on-finish-move-arm log-id nil)
-             (error 'manipulation-pose-unreachable
-                    :result (list side pose-stamped)))
-           (moveit:timed-out (f)
-             (declare (ignore f))
-             (ros-error (move arm) "Timeout.")
-             (cram-language::on-finish-move-arm log-id nil)
-             (error 'manipulation-pose-unreachable
-                    :result (list side pose-stamped)))
-           (moveit:goal-in-collision (f)
-             (declare (ignore f))
-             (ros-error (move arm) "Goal in collision.")
-             (cram-language::on-finish-move-arm log-id nil)
-             (error 'manipulation-pose-occupied
-                    :result (list side pose-stamped))))
-        (cond ((let ((result
-                       (multiple-value-bind (start trajectory)
-                           (moveit:move-link-pose
-                            link-name
-                            planning-group pose-stamped
-                            :ignore-collisions ignore-collisions
-                            :allowed-collision-objects allowed-collision-objects
-                            :touch-links (links-for-arm-side side)
-                            :plan-only plan-only
-                            :start-state start-state
-                            :collidable-objects collidable-objects
-                            :max-tilt max-tilt)
-                                        ;:reference-frame "base_link")
-                         (declare (ignorable start))
-                         (values trajectory start))))
-                 (cram-language::on-finish-move-arm log-id t)
-                 (let ((bs-update (plan-knowledge:on-event
-                                   (make-instance
-                                    'plan-knowledge:robot-state-changed))))
-                   (cond (plan-only result)
-                         (t bs-update)))))
-              (t (cram-language::on-finish-move-arm log-id nil)
-                 (error 'manipulation-failed
-                        :result (list side pose-stamped))))))))
+(defun gripper-at-pose-p (side pose-stamped
+                          &key cartesian-thres angular-thres)
+  (let* ((cartesian-distance-threshold (or cartesian-thres 0.02))
+         (angular-distance-threshold (or angular-thres 0.1))
+         (link-name (link-name side))
+         (link-id-pose
+           (cl-transforms-stamped:pose->pose-stamped
+            link-name 0.0 (cl-transforms:make-identity-pose)))
+         (link-compare-pose
+           (cl-transforms-stamped:transform-pose-stamped
+            *transformer*
+            :pose link-id-pose
+            :target-frame (frame-id pose-stamped)
+            :timeout *tf-default-timeout*))
+         (dist-v (v-dist
+                  (origin pose-stamped)
+                  (origin link-compare-pose)))
+         (dist-a-pre (angle-between-quaternions
+                      (cl-transforms:orientation pose-stamped)
+                      (cl-transforms:orientation link-compare-pose)))
+         (dist-a (cond ((> dist-a-pre pi)
+                        (- dist-a-pre (* 2 pi)))
+                       (t dist-a-pre))))
+    (and (<= (abs dist-v) cartesian-distance-threshold)
+         (<= (abs dist-a) angular-distance-threshold))))
 
 (define-hook cram-language::on-close-gripper (side max-effort position))
 (define-hook cram-language::on-open-gripper (side max-effort position))
@@ -311,8 +189,10 @@
                    (position command) position
                    (max_effort command) max-effort)
           :result-timeout 1.0)
-      (plan-knowledge:on-event (make-instance
-                                'plan-knowledge:robot-state-changed)))))
+      (cram-occasions-events:on-event
+       (make-instance
+        'cram-plan-occasions-events:robot-state-changed
+        :timestamp 0.0)))))
 
 (defun open-gripper (side &key (max-effort 100.0) (position 0.085))
   (cram-language::on-open-gripper side max-effort position)
@@ -326,13 +206,16 @@
                        (position command) position
                        (max_effort command) max-effort)
               :result-timeout 1.0)
-          (plan-knowledge:on-event (make-instance 'plan-knowledge:robot-state-changed)))
+          (cram-occasions-events:on-event
+           (make-instance 'cram-plan-occasions-events:robot-state-changed
+                          :timestamp 0.0)))
       (with-vars-bound (?carried-object ?gripper-link)
           (lazy-car (prolog `(and (object-in-hand ?carried-object ,side)
-                                  (cram-manipulation-knowledge:end-effector-link ,side ?gripper-link))))
+                                  (robot ?robot)
+                                  (end-effector-link ?robot ,side ?gripper-link))))
         (unless (is-var ?carried-object)
-          (plan-knowledge:on-event
-           (make-instance 'object-detached
+          (cram-occasions-events:on-event
+           (make-instance 'cram-plan-occasions-events:object-detached
              :object ?carried-object
              :link ?gripper-link
              :side side)))))))
@@ -352,28 +235,30 @@
 (defun update-grasped-object-designator (obj grippers &key new-properties)
   (let* ((target-frame (var-value '?target-frame
                                   (lazy-car
-                                   (crs:prolog
-                                    `(cram-pr2-knowledge::end-effector-link
-                                      ,(car grippers)
-                                      ?target-frame)))))
-         (obj-pose-in-gripper (tf:pose->pose-stamped
+                                   (prolog:prolog
+                                    `(and (robot ?robot)
+                                          (cram-robot-interfaces:end-effector-link
+                                           ?robot
+                                           ,(car grippers)
+                                           ?target-frame))))))
+         (obj-pose-in-gripper (pose->pose-stamped
                                target-frame
                                0.0
-                               (cl-tf:transform-pose
-                                *tf*
-                                :pose (obj-desig-location
-                                       (current-desig obj))
-                                :target-frame target-frame)))
+                               (cl-transforms-stamped:transform-pose-stamped
+                                *transformer*
+                                :pose (obj-desig-location (current-desig obj))
+                                :target-frame target-frame
+                                :timeout *tf-default-timeout*)))
          (loc-desig-in-gripper (make-designator
-                                'location
-                                (append `((pose ,obj-pose-in-gripper)
-                                          (in gripper))
+                                :location
+                                (append `((:pose ,obj-pose-in-gripper)
+                                          (:in :gripper))
                                         (mapcar (lambda (grip)
-                                                  `(gripper ,grip))
+                                                  `(:gripper ,grip))
                                                 grippers)))))
     (make-designator
-     'object
-     (append `((at ,loc-desig-in-gripper) . ,(remove 'at (description obj) :key #'car))
+     :object
+     (append `((:at ,loc-desig-in-gripper) . ,(remove :at (description obj) :key #'car))
              new-properties)
      obj)))
 
@@ -390,33 +275,34 @@ its' supporting plane."
               UPDATE-PICKED-UP-OBJECT-DESIGNATOR. Please use
               UPDATE-GRASPED-OBJECT-DESIGNATOR instead.")
   ;; get current pose of the object in map frame
-  (let* ((obj-pose (cl-tf:transform-pose
-                    *tf* :pose (obj-desig-location (current-desig obj-desig))
-                         :target-frame "/map"))
+  (let* ((obj-pose (cl-transforms-stamped:transform-pose-stamped
+                    *transformer*
+                    :pose (obj-desig-location (current-desig obj-desig))
+                    :target-frame *fixed-frame*
+                    :timeout *tf-default-timeout*))
          ;; build a new location designator for the object:
          ;; the transform will be in the wrist frame of the `side' gripper
          ;; thus it'll move with the gripper;
          ;; adding (in ,`gripper') indicates whether it has been grasped
          ;; with one or two grippers;
          ;; (orientation ...) is the intended put down orientation of the object;
-         (new-loc-desig (make-designator
-                         'location
-                         `((in ,gripper)
-                           (side ,side)
-                           (pose ,(tf:copy-pose-stamped
-                                   (cl-tf:transform-pose
-                                    *tf* :pose obj-pose
-                                         :target-frame (cut:var-value
-                                                        '?link
-                                                        (first
-                                                         (crs:prolog
-                                                          `(manipulator-link ,side ?link)))))
-                                   :stamp 0.0))
-                           (height ,height)
-                           (orientation ,(cl-transforms:orientation obj-pose))))))
+         (new-loc-desig
+           (make-designator
+            :location
+            `((:in ,gripper)
+              (:side ,side)
+              (:pose ,(copy-pose-stamped
+                      (cl-transforms-stamped:transform-pose-stamped
+                       *transformer*
+                       :pose obj-pose
+                       :target-frame (link-name side)
+                       :timeout *tf-default-timeout*)
+                      :stamp 0.0))
+              (:height ,height)
+              (:orientation ,(cl-transforms:orientation obj-pose))))))
     ;; build and equate new object designator using the new location designator
     ;; NOTE: this usage of make-designator does it both in one line
     (make-designator
-     'object
-     `((at ,new-loc-desig) . ,(remove 'at (description obj-desig) :key #'car))
+     :object
+     `((:at ,new-loc-desig) . ,(remove :at (description obj-desig) :key #'car))
      obj-desig)))

@@ -30,11 +30,15 @@
   :author "Lorenz Moesenlechner"
   :license "BSD"
   
-  :depends-on (cram-plan-knowledge
-               cram-manipulation-knowledge
-               cram-reasoning
-               cl-semantic-map-utils
-               semantic-map-cache)
+  :depends-on (;;cram-plan-knowledge
+               cram-occasions-events
+               ;;Cram-manipulation-knowledge
+               cram-robot-interfaces
+               cram-prolog
+               ;;cl-semantic-map-utils
+               cram-semantic-map-utils
+               ;;semantic-map-cache
+               cram-semantic-map)
   :components
   ((:module "src"
     :components

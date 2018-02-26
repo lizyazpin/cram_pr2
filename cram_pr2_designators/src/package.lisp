@@ -26,36 +26,12 @@
 ;;; ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 ;;; POSSIBILITY OF SUCH DAMAGE.
 
-(in-package :pr2-reachability-costmap)
+(in-package :cl-user)
 
-(defparameter *minimum* (cl-transforms:make-3d-vector -1.0 -1.5 -0.75))
-(defparameter *maximum* (cl-transforms:make-3d-vector 1.0 1.5 0.5))
-(defparameter *steps* (cl-transforms:make-3d-vector 0.05 0.05 0.05))
-(defparameter *angles* (append
-                        (loop for i from (- pi) below pi by (/ pi 4)
-                              collecting (cl-transforms:q*
-                                          (cl-transforms:euler->quaternion :az i)
-                                          (cl-transforms:euler->quaternion :ay (/ pi 2))))
-                        (loop for i from (- pi) below pi by (/ pi 4)
-                              collecting (cl-transforms:euler->quaternion :az i))))
-
-(defun generate-map-main ()
-  (let ((side (cond ((equal (second sb-ext:*posix-argv*) "left")
-                     :left)
-                    ((equal (second sb-ext:*posix-argv*) "right")
-                     :right)))
-        (filename (third sb-ext:*posix-argv*)))
-    (unless (and side filename)
-      (error
-       'simple-error
-       :format-control "Invalid command line parameters: Usage ~a <left | right> <filename>"
-       :format-arguments (list (first sb-ext:*posix-argv*))))
-    (roslisp:with-ros-node ("generate_reachability_map" :anonymous t)
-      (store-reachability-map
-       (make-instance 'reachability-map
-         :side side
-         :minimum *minimum*
-         :maximum *maximum*
-         :resolution *steps*
-         :orientations *angles*)
-       filename))))
+(defpackage cram-pr2-designators
+  (:use #:common-lisp #:cram-plan-occasions-events #:cram-robot-interfaces
+        #:prolog #:desig #:cram-semantic-map #:cl-transforms-stamped)
+  (:import-from #:cram-tf
+                *fixed-frame* *transformer* *tf-default-timeout*)
+  (:shadowing-import-from #:cram-designators object-designator object)
+  (:shadowing-import-from #:cram-robot-interfaces robot side))

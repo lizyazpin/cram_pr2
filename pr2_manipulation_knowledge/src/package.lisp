@@ -29,7 +29,7 @@
 (in-package :cl-user)
 
 (desig-props:def-desig-package pr2-manipulation-knowledge
-  (:use #:common-lisp #:cram-plan-knowledge #:cram-manipulation-knowledge
+  (:use #:common-lisp #:cram-occasions-events #:cram-robot-interfaces
         #:crs #:desig #:semantic-map-cache)
   (:export get-semantic-map
            manipulator-link

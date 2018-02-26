@@ -26,14 +26,21 @@
 ;;; ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 ;;; POSSIBILITY OF SUCH DAMAGE.
 
-(in-package :cl-user)
+(defsystem cram-pr2-designators
+  :author "Lorenz Moesenlechner"
+  :license "BSD"
 
-(defpackage pr2-reachability-costmap
-  (:use #:common-lisp #:location-costmap #:cram-reasoning)
-  (:import-from cram-roslisp-common *tf2*)
-  (:export generate-map-main reachability-map side maximum minimum
-           resolution orientations reachability-map pose-reachable-p
-           pose-reachability inverse-reachability-map origin
-           inverse-pose-reachability inverse-map-origin size
-           find-ik-solution get-reachability-map inverse-map-size
-           make-inverse-reachability-costmap))
+  :depends-on (cram-plan-occasions-events
+               cram-robot-interfaces
+               cram-prolog
+               cram-designators
+               cram-semantic-map-utils
+               cram-semantic-map
+               cram-tf
+               cram-bullet-reasoning)
+  :components
+  ((:module "src"
+    :components
+    ((:file "package")
+     (:file "semantic-map" :depends-on ("package"))
+     (:file "pick-and-place" :depends-on ("package"))))))

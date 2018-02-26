@@ -31,83 +31,88 @@
 
 (defvar *action-client* nil)
 
-(defun pose-stamped->point-stamped-msg (ps)
-  (roslisp:make-message
-   "geometry_msgs/PointStamped"
-   (stamp header) (tf:stamp ps)
-   (frame_id header) (tf:frame-id ps)
-   (x point) (cl-transforms:x
-              (cl-transforms:origin ps))
-   (y point) (cl-transforms:y
-              (cl-transforms:origin ps))                
-   (z point) (cl-transforms:z
-              (cl-transforms:origin ps))))
-
-(defun ensure-pose-stamped (pose)
-  (etypecase pose
-    (tf:pose-stamped pose)
-    (tf:stamped-transform
-       (tf:make-pose-stamped
-        (tf:frame-id pose) (tf:stamp pose)
-        (cl-transforms:translation pose)
-        (cl-transforms:rotation pose)))
-    (location-designator (reference pose))))
-
 (defun make-action-goal (pose-stamped)
-  (let ((pose-stamped
-          (cl-tf2:ensure-pose-stamped-transformed
-           *tf2* pose-stamped "/base_link" :use-current-ros-time t)))
-    (let* ((point-stamped-msg (pose-stamped->point-stamped-msg
-                               pose-stamped)))
-      (actionlib-lisp:make-action-goal-msg
-          *action-client*
-        max_velocity 10
-        min_duration 0.3
-        pointing_frame "/high_def_frame"
-        (x pointing_axis) 1.0
-        (y pointing_axis) 0.0
-        (z pointing_axis) 0.0
-        target point-stamped-msg))))
+  ;; HACK(winkler): Some code somewhere sends lists of poses rather
+  ;; than a pose itself and I can't find which one it is right
+  ;; now. The next statements are a dirty hack around that until I
+  ;; figure out which code is responsible for this.
+  (let* ((pose-stamped (cond ((listp pose-stamped) (first pose-stamped))
+                             (t pose-stamped)))
+         (target-frame "base_link")
+         (pose-stamped
+           (or (when (eql pose-stamped :forward)
+                 (make-pose-stamped
+                  *robot-base-frame*
+                  0.0
+                  (cl-transforms:make-3d-vector 3.0 0.0 1.5)
+                  (cl-transforms:make-quaternion 0.0 0.0 0.0 1.0)))
+               (cl-tf:copy-pose-stamped pose-stamped :stamp 0.0)))
+         (pose-stamped
+           (progn
+             (cl-tf:wait-for-transform
+              *transformer*
+              :timeout *tf-default-timeout*
+              :time (cl-tf:stamp pose-stamped)
+              :source-frame (cl-tf:frame-id pose-stamped)
+              :target-frame target-frame)
+             (cl-transforms-stamped:transform-pose-stamped
+              *transformer*
+              :pose pose-stamped
+              :target-frame target-frame
+              :timeout *tf-default-timeout*)))
+         (point-stamped-msg
+           (cl-transforms-stamped:pose-stamped->point-stamped-msg pose-stamped)))
+    (actionlib-lisp:make-action-goal-msg
+     *action-client*
+     max_velocity 10
+     min_duration 0.3
+     pointing_frame "high_def_frame"
+     (x pointing_axis) 1.0
+     (y pointing_axis) 0.0
+     (z pointing_axis) 0.0
+     target point-stamped-msg)))
 
 (def-fact-group point-head (action-desig)
 
   (<- (action-desig ?desig (point ?act))
     (trajectory-desig? ?desig)
-    (desig-prop ?desig (to see))
-    (desig-prop ?desig (pose ?pose))
+    (desig-prop ?desig (:to :see))
+    (desig-prop ?desig (:pose ?pose))
     (lisp-fun make-action-goal ?pose ?act))
 
   (<- (action-desig ?desig (point ?act))
     (trajectory-desig? ?desig)
-    (desig-prop ?desig (to see))
-    (desig-prop ?desig (location ?loc))
+    (desig-prop ?desig (:to :see))
+    (desig-prop ?desig (:location ?loc))
     (loc-desig-location ?loc ?pose)
     (lisp-fun make-action-goal ?pose ?act))
 
   (<- (action-desig ?desig (point ?act))
     (trajectory-desig? ?desig)
-    (desig-prop ?desig (to see))
-    (desig-prop ?desig (obj ?obj))
+    (desig-prop ?desig (:to :see))
+    (or (desig-prop ?desig (:obj ?obj))
+        (desig-prop ?desig (:object ?obj)))
     (desig-location-prop ?obj ?pose)
     (lisp-fun make-action-goal ?pose ?act))
     
   (<- (action-desig ?desig (follow ?act))
     (trajectory-desig? ?desig)
-    (desig-prop ?desig (to follow))
-    (desig-prop ?desig (pose ?pose))
+    (desig-prop ?desig (:to :follow))
+    (desig-prop ?desig (:pose ?pose))
     (lisp-fun make-action-goal ?pose ?act))
 
   (<- (action-desig ?desig (follow ?act))
     (trajectory-desig? ?desig)
-    (desig-prop ?desig (to follow))
-    (desig-prop ?desig (location ?loc))
+    (desig-prop ?desig (:to :follow))
+    (desig-prop ?desig (:location ?loc))
     (loc-desig-location ?loc ?pose)
     (lisp-fun make-action-goal ?pose ?act))
 
   (<- (action-desig ?desig (follow ?act))
     (trajectory-desig? ?desig)
-    (desig-prop ?desig (to follow))
-    (desig-prop ?desig (obj ?obj))
+    (desig-prop ?desig (:to :follow))
+    (or (desig-prop ?desig (:obj ?obj))
+        (desig-prop ?desig (:object ?obj)))
     (obj-desig-location ?obj ?pose)
     (lisp-fun make-action-goal ?pose ?act)))
 
@@ -116,8 +121,8 @@
 
   (<- (matching-process-module ?designator point-head-process-module)
     (trajectory-desig? ?designator)
-    (or (desig-prop ?designator (to see))
-        (desig-prop ?designator (to follow))))
+    (or (desig-prop ?designator (:to :see))
+        (desig-prop ?designator (:to :follow))))
 
   (<- (available-process-module point-head-process-module)
     (not (projection-running ?_))))

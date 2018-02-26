@@ -30,24 +30,23 @@
 (desig-props:def-desig-package pr2-manipulation-process-module
   (:nicknames :pr2-manip-pm)
   (:use #:common-lisp
-        #:crs
+        #:prolog
         #:cut
         #:desig
-        #:designators-ros
-        #:cram-roslisp-common
+        #:cram-tf
         #:cram-process-modules
-        #:cram-plan-failures
-        #:cram-plan-knowledge
-        #:cram-manipulation-knowledge)
+        #:cram-common-failures
+        #:cram-plan-occasions-events
+        #:cram-occasions-events
+        #:cram-robot-interfaces
+        #:cl-transforms-stamped)
   (:import-from alexandria ignore-some-conditions)
-  (:import-from pr2-manipulation-knowledge
-                manipulator-link
-                planning-group)
   (:import-from roslisp ros-info ros-warn ros-error ros-time)
-  (:import-from cram-roslisp-common *tf2*)
+  (:shadowing-import-from #:cram-designators object object-designator)
   (:export pr2-manipulation-process-module
            wait-for-controller
-           reorient-object)
+           reorient-object
+           close-radius)
   (:desig-properties #:trajectory #:type #:to #:open #:obj #:side #:sides #:close
                      #:grasp #:put-down #:pose #:parked #:lift
                      #:carry #:at #:orientation #:in #:gripper #:both-grippers

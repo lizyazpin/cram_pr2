@@ -62,12 +62,14 @@
 (roslisp-utilities:register-ros-init-function init-pr2-navigation-process-module)
 
 (defun make-action-goal (pose)
-  (actionlib-lisp:make-action-goal-msg *navp-client*
-    target_pose (tf:pose-stamped->msg pose)))
+  (actionlib-lisp:make-action-goal-msg *navp-client* target_pose (to-msg pose)))
 
 (defun use-navp? (goal-pose)
-  (let* ((pose-in-base (cl-tf2:ensure-pose-stamped-transformed
-                        *tf2* goal-pose "/base_footprint"))
+  (let* ((pose-in-base (cl-transforms-stamped:transform-pose-stamped
+                        *transformer*
+                        :pose goal-pose
+                        :target-frame *robot-base-frame*
+                        :timeout *tf-default-timeout*))
          (goal-dist (cl-transforms:v-norm
                      (cl-transforms:origin pose-in-base)))
          (goal-angle (atan
@@ -80,8 +82,10 @@
          (< goal-angle *navp-max-angle*))))
 
 (defun goal-reached? (goal-pose)
-  (let* ((pose-in-base (cl-tf2:ensure-pose-stamped-transformed
-                        *tf2* goal-pose "/base_footprint"))
+  (let* ((pose-in-base (cl-transforms-stamped:transform-pose-stamped
+                        *transformer*
+                        :pose goal-pose :target-frame *robot-base-frame*
+                        :timeout *tf-default-timeout*))
          (goal-dist (cl-transforms:v-norm
                      (cl-transforms:origin pose-in-base)))
          (goal-angle (second
@@ -98,29 +102,44 @@
           (t t))))
 
 (defun call-nav-action (client desig)
-  (let* ((goal-pose (reference desig))
+  (let* ((goal-location (desig-prop-value desig :goal))
+         (timeout (or (desig-prop-value desig :timeout)
+                      10.0))
+         (goal-pose (reference goal-location))
          (goal-pose-in-fixed-frame
-           (cl-tf2:ensure-pose-stamped-transformed
-            *tf2* goal-pose designators-ros:*fixed-frame* :use-current-ros-time t)))
+           (progn
+             (tf:wait-for-transform
+              *transformer*
+              :time 0.0
+              :source-frame (tf:frame-id goal-pose)
+              :target-frame *fixed-frame*)
+             (cl-transforms-stamped:transform-pose-stamped
+              *transformer*
+              :pose (tf:copy-pose-stamped goal-pose :stamp 0.0)
+              :target-frame *fixed-frame*
+              :timeout *tf-default-timeout*))))
     (roslisp:publish (roslisp:advertise "/ppp" "geometry_msgs/PoseStamped")
-                     (tf:pose-stamped->msg goal-pose-in-fixed-frame))
+                     (to-msg goal-pose-in-fixed-frame))
+    (actionlib-lisp:wait-for-server client)
     (multiple-value-bind (result status)
         (actionlib-lisp:send-goal-and-wait
          client (make-action-goal goal-pose-in-fixed-frame)
-         10.0 10.0)
+         timeout 1.0)
       (declare (ignorable result status))
       (roslisp:ros-info (pr2-nav process-module) "Nav action finished.")
-      (unless (goal-reached? (tf:copy-pose-stamped
+      (unless (goal-reached? (copy-pose-stamped
                               goal-pose-in-fixed-frame
                               :stamp 0))
         (cpl:fail 'location-not-reached-failure
                   :location desig)))))
 
-(def-process-module pr2-navigation-process-module (goal)
+(def-process-module pr2-navigation-process-module (desig)
   (when *navigation-enabled*
     (unwind-protect
          (progn
            (roslisp:ros-info (pr2-nav process-module) "Using nav-pcontroller.")
-           (call-nav-action *navp-client* (reference goal)))
+           (call-nav-action *navp-client* desig))
       (roslisp:ros-info (pr2-nav process-module) "Navigation finished.")
-      (cram-plan-knowledge:on-event (make-instance 'cram-plan-knowledge:robot-state-changed)))))
+      (cram-occasions-events:on-event
+       (make-instance 'cram-plan-occasions-events:robot-state-changed
+                      :timestamp 0.0)))))

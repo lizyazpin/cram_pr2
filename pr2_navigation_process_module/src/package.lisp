@@ -32,11 +32,11 @@
 (desig-props:def-desig-package pr2-navigation-process-module
   (:nicknames :pr2-nav-pm)
   (:use #:common-lisp
-        #:cram-reasoning
+        #:cram-prolog
         #:cram-designators
         #:cram-process-modules
-        #:cram-roslisp-common
-        #:cram-plan-failures)
+        #:cram-tf
+        #:cram-common-failures
+        #:cl-transforms-stamped)
   (:export #:pr2-navigation-process-module #:*navigation-enabled*)
-  (:import-from cram-roslisp-common *tf2*)
   (:desig-properties #:type #:navigation #:goal #:to))
